@@ -1,0 +1,308 @@
+// ===================================================================================
+// PROGRAMACIÓN DEL NÚCLEO DE COMBATE: ECHOES OF AETHEL
+// ===================================================================================
+// Este código simula la ley física del universo (Ecuación de Armonía) y el bucle de juego.
+
+// -------------------------------------------------------------------
+// 1. CONSTANTES Y ESTADO INICIAL DEL SISTEMA
+// -------------------------------------------------------------------
+
+// --- Constantes Físicas de la Ecuación de Armonía ---
+const KAPPA = 0.05;    // Tasa de Difusión (Tendencia a la Fuente)
+const ALPHA = 0.15;    // Eficiencia de Impacto del Jugador
+let GAMMA = 0.02;      // Penalización por Disonancia (se duplica con el Sabotaje)
+let Fluctuador_Phi = 0.0; // Ruido Temporal (0.0 = Estable, negativo = Caos del Jefe)
+const E_Target = 50.0; // Energía de Armonía Objetivo (Punto Perfecto)
+
+// --- Estado del Juego ---
+let E_Armonia_Actual = 25.0; // Empieza desfasada
+let Energia_Cronica = 25.0;  // Recurso defensivo para el Diapasón
+let Combo_Actual = 0;
+let Multiplicador_Combo = 1.0;
+let isDiapasonActive = false;
+
+// --- Constantes de Juego ---
+const COSTE_DIAPASON = 10.0;
+const DURACION_ESTABILIDAD = 5000; // ms
+const UMBRAL_FIN_SINGULARIDAD = 1.0; // 100% de Singularidad
+const DECAY_RATE = 0.5;
+
+// -------------------------------------------------------------------
+// 2. SISTEMA DE INPUT Y RECURSOS
+// -------------------------------------------------------------------
+
+/**
+ * Función que actualiza el combo y genera Energía Crónica (E_C) basado en la precisión.
+ * @param {string} precision - "Perfecto", "Excelente", "Bueno", o "Fallo".
+ */
+function updateComboAndResources(precision) {
+    let recargaEC = 0.0;
+
+    if (precision === "Perfecto" || precision === "Excelente") {
+        // Aumentar combo
+        Combo_Actual += 1;
+        if (Combo_Actual % 5 === 0 && Combo_Actual <= 10) {
+            Multiplicador_Combo += 0.2;
+            console.log(`[HUD] ¡COMBO X${Multiplicador_Combo.toFixed(1)}!`);
+        }
+        
+        // Generar Energía Crónica (E_C)
+        recargaEC = (precision === "Perfecto") ? 2.0 : 1.0;
+        Energia_Cronica = Math.min(100.0, Energia_Cronica + recargaEC);
+        
+    } else if (precision === "Fallo") {
+        // Penalización: Decaimiento del combo
+        Combo_Actual = 0;
+        Multiplicador_Combo = Math.max(1.0, Multiplicador_Combo - DECAY_RATE);
+        console.log(`[HUD] Fallo. Combo decae a X${Multiplicador_Combo.toFixed(1)}.`);
+    }
+}
+
+/**
+ * Calcula el impacto final del jugador en la Ecuación de Armonía.
+ * @param {number} timeDelta - La diferencia absoluta entre el input y el beat (en segundos).
+ * @param {string} estilo - Estilo musical (afecta el impacto base).
+ * @returns {number} El valor final de Impacto_Jugador.
+ */
+function calculateRhythmicImpact(timeDelta, estilo) {
+    const timeDeltaMs = timeDelta * 1000;
+    let impactoBase = (estilo === "METAL") ? 12.0 : 10.0; // Impacto base modificado
+    let precision = "Fallo";
+    let multiplicadorPrecision = 0.0;
+
+    // Determinar la precisión del timing
+    if (timeDeltaMs <= 30) {
+        precision = "Perfecto";
+        multiplicadorPrecision = 1.5;
+    } else if (timeDeltaMs <= 70) {
+        precision = "Excelente";
+        multiplicadorPrecision = 1.0;
+    } else if (timeDeltaMs <= 120) {
+        precision = "Bueno";
+        multiplicadorPrecision = 0.5;
+    } else {
+        precision = "Fallo";
+        multiplicadorPrecision = -0.2; // Penalización por Fallo
+    }
+    
+    updateComboAndResources(precision);
+
+    // Impacto Final = (Impacto Base * Precisión) * Multiplicador Combo
+    const impactoFinal = (impactoBase * multiplicadorPrecision) * Multiplicador_Combo;
+    
+    console.log(`[INPUT] Precisión: ${precision}. Impacto generado: ${impactoFinal.toFixed(2)}`);
+    return impactoFinal;
+}
+
+// -------------------------------------------------------------------
+// 3. NÚCLEO FÍSICO Y ECUACIÓN MAESTRA
+// -------------------------------------------------------------------
+
+/**
+ * Implementación de la Ecuación Maestra de Armonía.
+ * @param {number} impactoJugador - El valor del impacto rítmico.
+ * @param {number} E_Fuente - Energía de la Fuente de Armonía.
+ * @returns {number} La Tasa de Cambio de Armonía (dE/dt).
+ */
+function calculateArmonyRateOfChange(impactoJugador, E_Fuente) {
+    const E_actual = E_Armonia_Actual;
+    const E_target = E_Target;
+    
+    // 1. Difusión (Tender hacia la Fuente)
+    const difusion = KAPPA * (E_Fuente - E_actual);
+    
+    // 2. Ataque del Jugador (Inyección de Energía)
+    const ataque = ALPHA * impactoJugador;
+    
+    // 3. Penalización por Disonancia (Castigo si está lejos del Target)
+    const penalizacion = GAMMA * Math.abs(E_actual - E_target);
+    
+    // 4. Ruido del Enemigo
+    const ruidoPhi = Fluctuador_Phi;
+    
+    // dE/dt = Difusión + Ataque - Penalización + Ruido
+    const tasaFinal = difusion + ataque - penalizacion + ruidoPhi;
+    
+    return tasaFinal;
+}
+
+
+// -------------------------------------------------------------------
+// 4. SISTEMA DE ENEMIGO Y DEFENSA
+// -------------------------------------------------------------------
+
+// Guarda los valores antes del Diapasón para poder revertirlos.
+let savedPhi = 0.0;
+let savedGamma = 0.0;
+
+/**
+ * Ataque del Jefe: Inyecta caos al sistema (activa el Ruido Temporal y penaliza Disonancia).
+ */
+function activateEntropicSabotage() {
+    if (isDiapasonActive) return; // No ataca si el Diapasón está activo
+    
+    const PHI_SABOTAJE_VALOR = -0.15;
+    
+    Fluctuador_Phi += PHI_SABOTAJE_VALOR;
+    GAMMA *= 2.0; // Duplica la severidad de la Disonancia
+    
+    console.warn(`[JEFE] ¡SABOTAJE ENTRÓPICO ACTIVADO! Ruido (Phi): ${Fluctuador_Phi.toFixed(2)}`);
+    
+    // Programa el fin del sabotaje
+    setTimeout(restoreSabotage, 4000); 
+}
+
+function restoreSabotage() {
+    // Revierte el sabotaje del jefe
+    Fluctuador_Phi = 0.0;
+    GAMMA = 0.02;
+    console.info("[JEFE] Sabotaje Entrópico finalizado. Armonía restaurada.");
+}
+
+/**
+ * Herramienta del Jugador: Neutraliza el caos con el Diapasón de la Estabilidad.
+ */
+function useDiapasonOfStability() {
+    if (Energia_Cronica < COSTE_DIAPASON) {
+        console.error("[HUD] ¡ENERGÍA CRÓNICA INSUFICIENTE!");
+        return;
+    }
+    if (isDiapasonActive) return;
+
+    Energia_Cronica -= COSTE_DIAPASON;
+    isDiapasonActive = true;
+    
+    // Guardar valores anteriores para la reversión
+    savedPhi = Fluctuador_Phi;
+    savedGamma = GAMMA;
+
+    // Neutralización: Anula el ruido y restablece la penalización base
+    Fluctuador_Phi = 0.0; 
+    GAMMA = 0.02; 
+    
+    console.log(`[HERRAMIENTA] Diapasón de la Estabilidad activado. E_C restante: ${Energia_Cronica.toFixed(1)}`);
+    
+    // Programa el fin de la estabilidad
+    setTimeout(restoreDiapason, DURACION_ESTABILIDAD);
+}
+
+function restoreDiapason() {
+    // Restaura los valores de caos previos
+    Fluctuador_Phi = savedPhi; 
+    GAMMA = savedGamma;
+    isDiapasonActive = false;
+    console.info("[HERRAMIENTA] Diapasón finalizado. Caos restablecido.");
+}
+
+
+// -------------------------------------------------------------------
+// 5. SISTEMA DE FALLO
+// -------------------------------------------------------------------
+
+/**
+ * Verifica si la disonancia ha causado el colapso de la Partitura Rota.
+ */
+function checkSingularityCollapse() {
+    const disonanciaAbsoluta = Math.abs(E_Armonia_Actual - E_Target);
+    
+    // Normalizar la barra de singularidad. Usamos E_Target como el máximo desfase aceptable.
+    const barraSingularidad = disonanciaAbsoluta / E_Target;
+
+    if (barraSingularidad >= UMBRAL_FIN_SINGULARIDAD) {
+        // Condición de Game Over
+        clearInterval(gameLoopInterval);
+        console.error("\n=============================================");
+        console.error("¡GAME OVER! COLAPSO DE LA PARTITURA ROTA.");
+        console.error("La Disonancia superó el horizonte de sucesos.");
+        console.error("=============================================\n");
+        return true;
+    }
+
+    if (barraSingularidad >= 0.90) {
+        console.warn("[ALARMA CRÍTICA] ¡SINGULARIDAD AL 90%! ARMONÍA CRÍTICA.");
+    } else if (barraSingularidad >= 0.60) {
+        console.log("[ALARMA] Disonancia Alta (60%).");
+    }
+    
+    return false;
+}
+
+
+// -------------------------------------------------------------------
+// 6. BUCLE DE JUEGO PRINCIPAL (SIMULACIÓN)
+// -------------------------------------------------------------------
+
+let gameLoopInterval;
+let lastAttackTime = Date.now();
+const attackCooldown = 10000; // El jefe ataca cada 10 segundos
+
+/**
+ * Función que simula un ciclo de juego (se ejecuta repetidamente).
+ * @param {number} deltaTime - Tiempo pasado desde el último tick (en ms).
+ */
+function gameLoop(deltaTime = 1000) { 
+    
+    // Simulación: La Fuente de Armonía es constante.
+    const E_Fuente_Actual = 50.0;
+    
+    // Simulación de Input: Asumimos que el jugador presiona un 'Excelente' (0.05 segundos de TimeDelta)
+    // CADA SEGUNDO para mantener el ritmo.
+    const TimeDelta_Input = 0.05; 
+    
+    // --- PASO 1: GESTIÓN DE INPUT (Impacto del Jugador) ---
+    const impactoJugador = calculateRhythmicImpact(TimeDelta_Input, "METAL");
+    
+    // --- PASO 2: CÁLCULO DE LA FÍSICA ---
+    const tasaCambio = calculateArmonyRateOfChange(impactoJugador, E_Fuente_Actual);
+    
+    // --- PASO 3: APLICAR CAMBIO DE ARMONÍA ---
+    E_Armonia_Actual += tasaCambio * (deltaTime / 1000); // Aplicar cambio basado en segundos
+    
+    // Limitar Armonía a valores razonables (0 a 100)
+    E_Armonia_Actual = Math.max(0, Math.min(100, E_Armonia_Actual));
+    
+    // --- PASO 4: CHEQUEO DEL JEFE (Ataque cíclico) ---
+    if (Date.now() - lastAttackTime > attackCooldown) {
+        // El jefe ataca solo si la Armonía es relativamente alta para castigar al jugador
+        if (E_Armonia_Actual > 40) { 
+            activateEntropicSabotage();
+        }
+        lastAttackTime = Date.now();
+    }
+    
+    // --- PASO 5: CHEQUEO DE FALLO ---
+    if (checkSingularityCollapse()) {
+        return;
+    }
+    
+    // --- REPORTAR ESTADO ---
+    console.log(`[TICK] E_Armonía: ${E_Armonia_Actual.toFixed(2)} | dE/dt: ${tasaCambio.toFixed(2)} | E_C: ${Energia_Cronica.toFixed(1)} | Combo: x${Multiplicador_Combo.toFixed(1)}`);
+}
+
+// -------------------------------------------------------------------
+// INICIO DEL JUEGO (PUNTO DE ENTRADA)
+// -------------------------------------------------------------------
+
+function Inicializar_Prototipe_Aethel() {
+    console.log("=============================================");
+    console.log("     INICIANDO PROTOTIPO DE COMBATE RÍTMICO    ");
+    console.log("=============================================");
+    console.log(`Objetivo de Armonía (E_Target): ${E_Target}`);
+    console.log("Simulación: Jugador realiza un 'Excelente' cada segundo.");
+    console.log("El jefe atacará cíclicamente para inyectar caos.");
+    console.log("---------------------------------------------");
+}
+
+
+Inicializar_Prototipe_Aethel();
+gameLoopInterval = setInterval(gameLoop, 1000); // Inicia el bucle cada 1 segundo
+
+// --- ACCIONES QUE PUEDES EJECUTAR EN LA CONSOLA PARA PROBAR LA LÓGICA ---
+// 1. Defenderse del caos:
+// useDiapasonOfStability();
+
+// 2. Simular un golpe 'Perfecto' (genera más E_C y aumenta más el Combo):
+// calculateRhythmicImpact(0.015, "METAL");
+
+// 3. Forzar el ataque del jefe:
+// activateEntropicSabotage();
